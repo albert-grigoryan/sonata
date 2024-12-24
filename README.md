@@ -38,3 +38,8 @@ Then `cd` to the package, and run `cargo test` from there.
 
 Copyright (c) 2023 Musharraf Omer. This code is licensed under the  MIT license.
 
+Copyright (c) 2024, modifications by Albert Grigoryan / Disability Rights Agenda NGO.
+These modifications are licensed under The GNU General Public License Version 2 (GPLv2).
+
+When redistributed, the entire combined work is subject to the terms of the GPLv2 license, as required by the compatibility of the MIT license with the GPLv2.
+The MIT license still applies to the original code, and the original copyright and licensing notice must be retained in all copies or substantial portions of the code.

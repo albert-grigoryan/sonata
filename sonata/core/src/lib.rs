@@ -50,9 +50,13 @@ impl From<WaveWriterError> for SonataError {
 }
 
 /// A wrapper type that holds sentence phonemes
-pub struct Phonemes(Vec<String>);
+pub struct Phonemes(pub Vec<String>);
 
 impl Phonemes {
+    pub fn new(phonemes: Vec<String>) -> Self {
+        Self(phonemes)
+    }
+
     pub fn sentences(&self) -> &Vec<String> {
         &self.0
     }
@@ -63,6 +67,14 @@ impl Phonemes {
 
     pub fn num_sentences(&self) -> usize {
         self.0.len()
+    }
+
+    pub fn add(&mut self, phoneme: String) {
+        self.0.push(phoneme);
+    }
+
+    pub fn extend(&mut self, other: Vec<String>) {
+        self.0.extend(other);
     }
 }
 
@@ -77,7 +89,6 @@ impl std::string::ToString for Phonemes {
         self.0.join(" ")
     }
 }
-
 
 pub trait SonataModel {
     fn audio_output_info(&self) -> SonataResult<AudioInfo>;

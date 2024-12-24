@@ -16,6 +16,8 @@ const CLAUSE_INTONATION_COMMA: i32 = 0x00001000;
 const CLAUSE_INTONATION_QUESTION: i32 = 0x00002000;
 const CLAUSE_INTONATION_EXCLAMATION: i32 = 0x00003000;
 const CLAUSE_TYPE_SENTENCE: i32 = 0x00080000;
+const CLAUSE_TYPE_CLAUSE: i32 = 0x00040000;
+
 /// Name of the environment variable that points to the directory that contains `espeak-ng-data` directory
 /// only needed if `espeak-ng-data` directory is not in the expected location (i.e. eSpeak-ng is not installed system wide)
 const SONATA_ESPEAKNG_DATA_DIRECTORY: &str = "SONATA_ESPEAKNG_DATA_DIRECTORY";
@@ -83,7 +85,7 @@ pub fn text_to_phonemes(
 }
 
 pub fn _text_to_phonemes(
-    text: &str,
+    full_text: &str,
     language: &str,
     phoneme_separator: Option<char>,
     remove_lang_switch_flags: bool,
@@ -106,33 +108,40 @@ pub fn _text_to_phonemes(
     let phoneme_mode: i32 = calculated_phoneme_mode.try_into().unwrap();
     let mut sent_phonemes = Vec::new();
     let mut phonemes = String::new();
-    let mut text_c_char = rust_string_to_c(text) as *const ffi::c_char;
-    let text_c_char_ptr = std::ptr::addr_of_mut!(text_c_char);
-    let mut terminator: ffi::c_int = 0;
-    let terminator_ptr: *mut ffi::c_int = &mut terminator;
-    while !text_c_char.is_null() {
-        let ph_str = unsafe {
-            let res = espeakng::espeak_TextToPhonemesWithTerminator(
-                text_c_char_ptr,
-                espeakng::espeakCHARS_UTF8.try_into().unwrap(),
-                phoneme_mode,
-                terminator_ptr,
-            );
-            FfiStr::from_raw(res)
-        };
-        phonemes.push_str(&ph_str.into_string());
-        let intonation = terminator & 0x0000F000;
-        if intonation == CLAUSE_INTONATION_FULL_STOP {
-            phonemes.push('.');
-        } else if intonation == CLAUSE_INTONATION_COMMA {
-            phonemes.push(',');
-        } else if intonation == CLAUSE_INTONATION_QUESTION {
-            phonemes.push('?');
-        } else if intonation == CLAUSE_INTONATION_EXCLAMATION {
-            phonemes.push('!');
-        }
-        if (terminator & CLAUSE_TYPE_SENTENCE) == CLAUSE_TYPE_SENTENCE {
-            sent_phonemes.push(std::mem::take(&mut phonemes));
+    let parts: Vec<&str> = full_text.split(|c| c == '.').map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    for text in parts {
+        let mut text_c_char = rust_string_to_c(text) as *const ffi::c_char;
+        let text_c_char_ptr = std::ptr::addr_of_mut!(text_c_char);
+        let mut terminator: ffi::c_int = 0;
+        let terminator_ptr: *mut ffi::c_int = &mut terminator;
+        while !text_c_char.is_null() {
+            let ph_str = unsafe {
+                let res = espeakng::espeak_TextToPhonemesWithTerminator(
+                    text_c_char_ptr,
+                    espeakng::espeakCHARS_UTF8.try_into().unwrap(),
+                    phoneme_mode,
+                    terminator_ptr,
+                );
+                FfiStr::from_raw(res)
+            };
+            phonemes.push_str(&ph_str.into_string());
+            let intonation = terminator & 0x0000F000;
+            if intonation == CLAUSE_INTONATION_FULL_STOP {
+                phonemes.push('.');
+            } else if intonation == CLAUSE_INTONATION_QUESTION {
+                phonemes.push('?');
+            } else if intonation == CLAUSE_INTONATION_EXCLAMATION {
+                phonemes.push('!');
+            }
+
+            if (terminator & CLAUSE_TYPE_SENTENCE) == CLAUSE_TYPE_SENTENCE {
+                sent_phonemes.push(std::mem::take(&mut phonemes));
+            } else if (terminator & CLAUSE_TYPE_CLAUSE) == CLAUSE_TYPE_CLAUSE {
+                sent_phonemes.push(std::mem::take(&mut phonemes));
+            }
         }
     }
     if !phonemes.is_empty() {

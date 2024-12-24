@@ -13,7 +13,9 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::ptr::null;
 use std::sync::{Arc, RwLock};
+use regex::Regex;
 
 const MIN_CHUNK_SIZE: isize = 44;
 const MAX_CHUNK_SIZE: usize = 1024;
@@ -155,6 +157,7 @@ pub struct ModelConfig {
     #[allow(dead_code)]
     phoneme_map: HashMap<i64, char>,
     phoneme_id_map: HashMap<char, Vec<i64>>,
+    other_phonemes: HashMap<char, String>
 }
 
 #[derive(Debug, Clone, Default)]
@@ -237,36 +240,144 @@ trait VitsModelCommons {
         eos_id: i64,
     ) -> Vec<i64> {
         let config = self.get_config();
-        let mut phoneme_ids: Vec<i64> = Vec::with_capacity((phonemes.len() + 1) * 2);
+        let mut phoneme_ids: Vec<i64> = Vec::with_capacity(phonemes.len() * 3);
         phoneme_ids.push(bos_id);
+        phoneme_ids.push(pad_id);
+        let mut is_empty = true;
         for phoneme in phonemes.chars() {
-            if let Some(id) = config.phoneme_id_map.get(&phoneme) {
-                phoneme_ids.push(*id.first().unwrap());
-                phoneme_ids.push(pad_id);
+            // Process new phonemes
+            if (config.other_phonemes.contains_key(&phoneme)) {
+                let new_phonemes = config.other_phonemes.get(&phoneme).unwrap();
+                for phoneme in new_phonemes.chars() {
+                    if let Some(id) = config.phoneme_id_map.get(&phoneme) {
+                        phoneme_ids.push(*id.first().unwrap());
+                        phoneme_ids.push(pad_id);
+                        is_empty = false;
+                    }
+                }
+            } else {
+                if let Some(id) = config.phoneme_id_map.get(&phoneme) {
+                    phoneme_ids.push(*id.first().unwrap());
+                    phoneme_ids.push(pad_id);
+                    is_empty = false;
+                }
             }
         }
         phoneme_ids.push(eos_id);
-        phoneme_ids
+        if (is_empty) {
+            phoneme_ids.clear();
+        }
+        return phoneme_ids;
     }
     fn do_phonemize_text(&self, text: &str) -> SonataResult<Phonemes> {
         let config = self.get_config();
-        let text = if config.espeak.voice == "ar" {
-            let diacritized = self.diacritize_text(text)?;
-            Cow::from(diacritized)
+
+        // Create a String to store concatenated phonemes
+        let mut phonemes_string = String::new();
+
+        // Process the text with IPA sections
+        self.process_text_with_ipa(&mut phonemes_string, text, &config)?;
+
+        // Split the phonemes string by the specified punctuation characters (.,)
+        let re = regex::Regex::new(r"[.,]").unwrap(); // Matches '.' or ','
+        let mut segments = re
+            .split(phonemes_string.trim())
+            .filter(|s| !s.is_empty()) // Remove empty strings
+            .map(String::from)
+            .collect::<Vec<String>>();
+
+        // Further split segments longer than 120 characters by whitespace
+        let mut final_segments = Vec::new();
+        for segment in segments {
+            if segment.len() > 120 {
+                let mut current = String::new();
+                for word in segment.split_whitespace() {
+                    if current.len() + word.len() + 1 > 120 {
+                        final_segments.push(current.trim().to_string());
+                        current = String::new();
+                    }
+                    current.push_str(word);
+                    current.push(' ');
+                }
+                if !current.is_empty() {
+                    final_segments.push(current.trim().to_string());
+                }
+            } else {
+                final_segments.push(segment);
+            }
+        }
+
+        Ok(Phonemes::new(final_segments))
+    }
+
+    fn process_text_with_ipa(&self, phonemes_string: &mut String, text: &str, config: &ModelConfig) -> SonataResult<()> {
+        // Regex to find "IPA{...}" sections
+        let ipa_regex = regex::Regex::new(r"ipa\{([^}]*)\}").unwrap();
+        let mut last_end = 0;
+
+        for ipa_match in ipa_regex.find_iter(text) {
+            // Handle the non-IPA section before the IPA
+            let non_ipa_text = &text[last_end..ipa_match.start()];
+            if !non_ipa_text.is_empty() {
+                self.process_non_ipa_section(phonemes_string, non_ipa_text, &config)?;
+            }
+
+            // Handle the IPA section
+            let ipa_text = &text[ipa_match.start() + 4..ipa_match.end() - 1]; // Extract IPA content
+            if !ipa_text.is_empty() {
+                if !phonemes_string.is_empty() {
+                    phonemes_string.push(' ');
+                }
+                phonemes_string.push_str(ipa_text);
+            }
+
+            last_end = ipa_match.end();
+        }
+
+        // Handle the remaining non-IPA text after the last IPA section
+        let remaining_text = &text[last_end..];
+        if !remaining_text.is_empty() {
+            self.process_non_ipa_section(phonemes_string, remaining_text, &config)?;
+        }
+
+        Ok(())
+    }
+
+    fn process_non_ipa_section(&self, phonemes_string: &mut String, text: &str, config: &ModelConfig) -> SonataResult<()> {
+        let russian_regex = regex::Regex::new(r"[А-Яа-я]").unwrap();
+
+        // Determine the language: 'ru' if Russian characters are found, otherwise 'hy'
+        let language = if russian_regex.is_match(text) {
+            "ru+en"
         } else {
-            Cow::from(text)
+            "hy+en"
         };
-        let phonemes = match text_to_phonemes(&text, &config.espeak.voice, None, true, false) {
+
+        // Get the phonemes result
+        let result = match text_to_phonemes(text, language, None, true, false) {
             Ok(ph) => ph,
             Err(e) => {
                 return Err(SonataError::PhonemizationError(format!(
                     "Failed to phonemize given text using espeak-ng. Error: {}",
                     e
-                )))
+                )));
             }
         };
-        Ok(phonemes.into())
+
+        // Concatenate the phonemes into the string
+        let phoneme_str = result.join(" "); // Assuming `result` is a Vec<String>
+        if !phonemes_string.is_empty() {
+            phonemes_string.push(' ');
+        }
+        phonemes_string.push_str(&phoneme_str);
+
+        Ok(())
     }
+
+    fn process_ipa_section(&self, phonemes_vec: &mut Vec<String>, ipa_text: &str) {
+        phonemes_vec.push(ipa_text.to_string());
+    }
+
     fn diacritize_text(&self, text: &str) -> SonataResult<String> {
         let diacritized_text = match do_tashkeel(self.get_tashkeel_engine().unwrap(), text, None, false) {
             Ok(d_text) => d_text,
